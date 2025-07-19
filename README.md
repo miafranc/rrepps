@@ -69,3 +69,8 @@ IMG_STD  = [0.2580, 0.2525, 0.2571] # standard deviation for image normalization
 
 CUDA_ID = 0 # ID of the GPU with CUDA support
 ```
+
+### Datasets used in the experiments
+
+* 10 Monkey Species: [https://www.kaggle.com/datasets/slothkong/10-monkey-species](https://www.kaggle.com/datasets/slothkong/10-monkey-species)
+* Stanford Dogs: [http://vision.stanford.edu/aditya86/ImageNetDogs/](http://vision.stanford.edu/aditya86/ImageNetDogs/)
