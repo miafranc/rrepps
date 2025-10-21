@@ -14,9 +14,19 @@ from PIL import Image
 import matplotlib
 import matplotlib.pyplot as plt
 import argparse
+import codecs
+import pickle
+import cv2
+from functools import reduce
+
+from sklearn.svm import SVC
+from sklearn.multiclass import OneVsRestClassifier
+from sklearn.metrics import accuracy_score
+from scipy.sparse import csr_matrix
+from scipy.linalg import norm
 
 from settings import *
-from utils import load, dump, get_train_validation, one_hot_np, one_hot_torch
+from utils import load, dump, dump_json, load_json, get_train_validation, one_hot_np, one_hot_torch
 from baseline import build_model, name2model
 from image_dataset import ImageDatasetWithFilenames
 
@@ -24,438 +34,601 @@ from image_dataset import ImageDatasetWithFilenames
 DEVICE = f'cuda:{CUDA_ID}' if torch.cuda.is_available() else 'cpu'
 
 
-def get_features(image, feature_extractor, batch_size=32):
+def extract_features(image, feature_extractor, batch_size=32):
+    '''
+    Extracts features from the neural network and returns as tensor,
+    in which every row is a feature vector.
+    '''
     ds = torch.utils.data.TensorDataset(image)
     dl = torch.utils.data.DataLoader(ds, batch_size=batch_size, shuffle=False)
     X = []
     for data in dl:
         x = feature_extractor(data[0])[name2model[MODEL_NAME][2]].detach()
-        X.append(torch.flatten(F.adaptive_avg_pool2d(x, (1, 1)), 1))
+        # print(x.shape)
+        if MODEL_NAME.startswith('densenet'):
+            x = F.relu(x, inplace=True)
+            x = F.adaptive_avg_pool2d(x, (1, 1))
+            x = torch.flatten(x, 1)
+        else:
+            x = torch.flatten(x, 1)
+        X.append(x)
 
     return torch.vstack(X)
 
 
-def train_np(dataloader, feature_extractor, lamb):
-    """
-    Kernelized Pegasos algorithm.
-    (Shalev-Shwartz, Shai, Yoram Singer, and Nathan Srebro. Pegasos: Primal estimated sub-gradient solver for SVM. Proceedings of the 24th ICML. 2007. https://home.ttic.edu/~nati/Publications/PegasosMPB.pdf;
-    Some useful notes on Pegasos: https://karlstratos.com/notes/pegasos.pdf)
-    """
-    alpha = lil_matrix((len(dataloader.dataset), NUM_CLASSES), dtype=np.int32)
-    print('Creating index...')
-    index_map = {dataloader.dataset[i][2]:i for i in range(len(dataloader.dataset))} # filename -> index
-    print('Done.')
-
-    torch.no_grad()
-
-    for i, data in enumerate(tqdm(dataloader, unit='batch')):
-        start = time.time()
-
-        (image, label, filename) = data
-        image = image.to(DEVICE)
-
-        X = get_features(image, feature_extractor)
-        y = one_hot_np(label.cpu().numpy(), num_classes=NUM_CLASSES)
-
-        X = X.cpu().numpy()
-        idx = np.array([index_map[ind] for ind in filename])
-
-        X = np.insert(X, X.shape[1], 1, axis=1)
-        eta = 1. / (lamb*(i+1)*image.shape[0])
-
-        for c in range(NUM_CLASSES):
-            nz_ind = alpha[:, c].nonzero()[0]
-            if len(nz_ind) == 0:
-                v = np.zeros((1, BATCH_SIZE_XSVM))
-            else:
-                Xi = torch.vstack([dataloader.dataset[nzi][0].to(DEVICE).unsqueeze(0) for nzi in nz_ind])
-                X_nz = get_features(Xi, feature_extractor).cpu().numpy()
-                X_nz = np.insert(X_nz, X_nz.shape[1], 1, axis=1)
-                y_nz = one_hot_np(np.array([dataloader.dataset[nzi][1] for nzi in nz_ind]), num_classes=NUM_CLASSES)
-                v = ((alpha[nz_ind, c].multiply(np.expand_dims(y_nz[:, c], axis=1))).T @ X_nz) @ X.T
-            if len(idx) == 1:
-                alpha[idx[0], c] = alpha[idx[0], c] + (((eta * np.multiply(np.expand_dims(y[:, c], axis=1), v.T)) < 1)*1)[0,0]
-            else:
-                alpha[idx, c] = alpha[idx, c] + ((eta * np.multiply(np.expand_dims(y[:, c], axis=1), v.T)) < 1)*1
-
-        end = time.time()
-        print(f'Time: {end-start}')
-
-    W = []
-    for c in range(NUM_CLASSES):
-        nz_ind = alpha[:, c].nonzero()[0]
-        Xi = torch.vstack([dataloader.dataset[nzi][0].to(DEVICE).unsqueeze(0) for nzi in nz_ind])
-        X_nz = get_features(Xi, feature_extractor).cpu().numpy()
-        X_nz = np.insert(X_nz, X_nz.shape[1], 1, axis=1)
-        y_nz = one_hot_np(np.array([dataloader.dataset[nzi][1] for nzi in nz_ind]), num_classes=NUM_CLASSES)
-
-        W.append((1. / (lamb * (i+1) * BATCH_SIZE_XSVM)) * (X_nz.T @ alpha[nz_ind, c].multiply(np.expand_dims(y_nz[:, c], axis=1))))
-
-    return np.hstack(W), alpha, index_map
-
-
-def train_torch(dataloader, feature_extractor, lamb):
-    """
-    Kernelized Pegasos algorithm.
-    """
-    alpha = lil_matrix((len(dataloader.dataset), NUM_CLASSES), dtype=np.int32)
-    print('Creating index...')
-    index_map = {dataloader.dataset[i][2]:i for i in range(len(dataloader.dataset))}
-    print('Done.')
-
-    torch.no_grad()
-
-    for i, data in enumerate(tqdm(dataloader, unit='batch')):
-        start = time.time()
-
-        (image, label, filename) = data
-        image = image.to(DEVICE)
-
-        X = get_features(image, feature_extractor) # b x d
-        y = one_hot_torch(label, num_classes=NUM_CLASSES).to(DEVICE)
-
-        idx = torch.tensor([index_map[ind] for ind in filename])
-
-        X = torch.cat((X, torch.ones((X.shape[0], 1)).to(DEVICE)), dim=1)
-        eta = 1. / (lamb*(i+1)*image.shape[0])
-
-        for c in range(NUM_CLASSES):
-            nz_ind = alpha[:, c].nonzero()[0]
-            if len(nz_ind) == 0:
-                v = torch.zeros((1, BATCH_SIZE_XSVM)).to(DEVICE)
-            else:
-                Xi = torch.vstack([dataloader.dataset[nzi][0].to(DEVICE).unsqueeze(0) for nzi in nz_ind])
-                X_nz = get_features(Xi, feature_extractor)
-                X_nz = torch.cat((X_nz, torch.ones((X_nz.shape[0], 1)).to(DEVICE)), dim=1)
-                y_nz = one_hot_torch(torch.tensor([dataloader.dataset[nzi][1] for nzi in nz_ind]), num_classes=NUM_CLASSES).to(DEVICE)
-                v = torch.matmul(torch.matmul((torch.tensor(alpha[nz_ind, c].todense()).to(DEVICE) * y_nz[:, c].unsqueeze(dim=1)).T, X_nz), X.T)
-            if len(idx) == 1:
-                alpha[idx[0], c] = alpha[idx[0], c] + (((eta * (y[:, c].unsqueeze(dim=1) * v.T)) < 1)*1).cpu().numpy()[0,0]
-            else:
-                alpha[idx, c] = alpha[idx, c] + (((eta * (y[:, c].unsqueeze(dim=1) * v.T)) < 1)*1).cpu().numpy()
-
-        end = time.time()
-        print(f'Time: {end-start}')
-
-    W = []
-    for c in range(NUM_CLASSES):
-        nz_ind = alpha[:, c].nonzero()[0]
-        Xi = torch.vstack([dataloader.dataset[nzi][0].to(DEVICE).unsqueeze(0) for nzi in nz_ind])
-        X_nz = get_features(Xi, feature_extractor)
-        X_nz = torch.cat((X_nz, torch.ones((X_nz.shape[0], 1)).to(DEVICE)), dim=1)
-        y_nz = one_hot_torch(np.array([dataloader.dataset[nzi][1] for nzi in nz_ind]), num_classes=NUM_CLASSES).to(DEVICE)
-
-        W.append((1. / (lamb * (i+1) * BATCH_SIZE_XSVM)) * torch.matmul(X_nz.T, torch.tensor(alpha[nz_ind, c].todense()).to(DEVICE) * y_nz[:, c].unsqueeze(dim=1)))
-
-    return torch.hstack(W), alpha, index_map
-
-
-def train_per_class(dataloader, feature_extractor, lamb, start_class=0):
-    """
-    Kernelized Pegasos algorithm.
-    """
-    print('Creating index...')
-    if not os.path.exists(f'models/xsvm_indexmap_{MODEL_NAME}'):
-        index_map = {dataloader.dataset[i][2]:i for i in range(len(dataloader.dataset))}
-        dump(index_map, f'models/xsvm_indexmap_{MODEL_NAME}')
-    else:
-        index_map = load(f'models/xsvm_indexmap_{MODEL_NAME}')
-    print('Done.')
-
-    torch.no_grad()
-
-    W = []
-    alpha = lil_matrix((len(dataloader.dataset), NUM_CLASSES), dtype=np.int32)
-
-    for c in range(start_class, NUM_CLASSES):
-        print(f'Class {c}:')
-        start = time.time()
-
-        for i, data in enumerate(tqdm(dataloader, unit='batch')):
-
-            (image, label, filename) = data
-            image = image.to(DEVICE)
-
-            X = get_features(image, feature_extractor) # b x d
-            y = one_hot_torch(label, num_classes=NUM_CLASSES).to(DEVICE)
-
-            idx = torch.tensor([index_map[ind] for ind in filename])
-
-            X = torch.cat((X, torch.ones((X.shape[0], 1)).to(DEVICE)), dim=1)
-            eta = 1. / (lamb*(i+1)*image.shape[0])
-
-            nz_ind = alpha[:, c].nonzero()[0]
-            if len(nz_ind) == 0:
-                v = torch.zeros((1, BATCH_SIZE_XSVM)).to(DEVICE)
-            else:
-                Xi = torch.vstack([dataloader.dataset[nzi][0].to(DEVICE).unsqueeze(0) for nzi in nz_ind])
-                X_nz = get_features(Xi, feature_extractor)
-                X_nz = torch.cat((X_nz, torch.ones((X_nz.shape[0], 1)).to(DEVICE)), dim=1)
-                y_nz = one_hot_torch(torch.tensor([dataloader.dataset[nzi][1] for nzi in nz_ind]), num_classes=NUM_CLASSES).to(DEVICE)
-                v = torch.matmul(torch.matmul((torch.tensor(alpha[nz_ind, c].todense()).to(DEVICE) * y_nz[:, c].unsqueeze(dim=1)).T, X_nz), X.T)
-            if len(idx) == 1:
-                alpha[idx[0], c] = alpha[idx[0], c] + (((eta * (y[:, c].unsqueeze(dim=1) * v.T)) < 1)*1).cpu().numpy()[0,0]
-            else:
-                alpha[idx, c] = alpha[idx, c] + (((eta * (y[:, c].unsqueeze(dim=1) * v.T)) < 1)*1).cpu().numpy()
-
-        end = time.time()
-        print(f'Time: {end-start}')
-        
-        nz_ind = alpha[:, c].nonzero()[0]
-        Xi = torch.vstack([dataloader.dataset[nzi][0].to(DEVICE).unsqueeze(0) for nzi in nz_ind])
-        X_nz = get_features(Xi, feature_extractor)
-        X_nz = torch.cat((X_nz, torch.ones((X_nz.shape[0], 1)).to(DEVICE)), dim=1)
-        y_nz = one_hot_torch(np.array([dataloader.dataset[nzi][1] for nzi in nz_ind]), num_classes=NUM_CLASSES).to(DEVICE)
-
-        W.append((1. / (lamb * (i+1) * BATCH_SIZE_XSVM)) * torch.matmul(X_nz.T, torch.tensor(alpha[nz_ind, c].todense()).to(DEVICE) * y_nz[:, c].unsqueeze(dim=1)))
-
-        dump([W[-1], alpha[:, c]], f'models/xsvm_w_{c}_{MODEL_NAME}')
-
-    return torch.hstack(W), alpha, index_map
-
-
-def test_np(dataloader, feature_extractor, W):
-    n_examples = 0
-    n_correct = 0
-
-    for i, data in enumerate(tqdm(dataloader, unit='batch')):
-        (image, label, filename) = data
-        image = image.to(DEVICE)
-
-        X = get_features(image, feature_extractor).cpu().numpy()
-        X = np.insert(X, X.shape[1], 1, axis=1)
-
-        pred = np.argmax(X @ W, axis=1)
-        n_examples += label.size(0)
-        n_correct += (pred == label.cpu().numpy()).sum()
-
-    acc = n_correct / n_examples
-
-    print('\tacc:\t{0}%'.format(acc))
-    return acc
-
-
-def test_torch(dataloader, feature_extractor, W):
-    n_examples = 0
-    n_correct = 0
-
-    for i, data in enumerate(tqdm(dataloader, unit='batch')):
-        (image, label, filename) = data
-        image = image.to(DEVICE)
-        label = label.to(DEVICE)
-
-        X = get_features(image, feature_extractor) # b x d
-        X = torch.cat((X, torch.ones((X.shape[0], 1)).to(DEVICE)), dim=1)
-
-        pred = torch.argmax(torch.matmul(X, W), axis=1)
-        n_examples += label.size(0)
-        n_correct += (pred == label).sum()
-
-    acc = n_correct / n_examples
-
-    print('\tacc:\t{0}%'.format(acc))
-    return acc.cpu().numpy()
-
-
-def train_test_xsvm(is_train=True, id=0):
+def generate_features(dataset_type='train'):
+    '''
+    Extracts and saves the features for the given dataset.
+    '''
     model = build_model(MODEL_NAME, NUM_CLASSES)
-    model.load_state_dict(torch.load(f'models/model_best_{BEST_MODEL}_{MODEL_NAME}.pth', weights_only=True))
+    model.load_state_dict(torch.load(os.path.join(MODEL_PATH, DATASET_NAME, f'model_best_{BEST_MODEL}_{MODEL_NAME}.pth'), weights_only=True))
     model = model.to(DEVICE)
     model.eval()
 
-    if os.path.exists(TRAINSET):
-        trainset = load(TRAINSET)
-        validationset = load(VALSET)
-    else:
-        if AUGMENT_XSVM:
-            augment = v2.Compose([
-                v2.Resize(256),
-                v2.RandomHorizontalFlip(0.5),
-                v2.RandomRotation(degrees=(-15, 15)),
-                v2.RandomPerspective(distortion_scale=0.3),
-                v2.RandomCrop(224),
-            ])
-        else:
-            augment = v2.Compose([
-                v2.Resize((224, 224)),
-            ])
-        trainset = ImageDatasetWithFilenames(DATA_PATH_TRAIN,
-                                             transform=v2.Compose([
-                                                augment,
-                                                v2.ToImage(), 
-                                                v2.ToDtype(torch.float32, scale=True),
-                                                v2.Normalize(mean=IMG_MEAN, std=IMG_STD),
-                                             ]))
-        
-        trainset, validationset = get_train_validation(trainset, use_percent=DATA_PERCENTAGE, val_split=0.2, stratify=True)
+    feature_extractor = create_feature_extractor(model, return_nodes=[name2model[MODEL_NAME][2]])
 
-        dump(trainset, TRAINSET)
-        dump(validationset, VALSET)
-    
-    sampler = torch.utils.data.RandomSampler(
-        trainset, 
-        replacement=True,
-        num_samples=int(NUM_SAMPLES_COEF*len(trainset)),
+    transform = v2.Compose([
+        v2.Resize((IMG_SIZE, IMG_SIZE)),
+        v2.ToImage(), 
+        v2.ToDtype(torch.float32, scale=True),
+        v2.Normalize(mean=IMG_MEAN, std=IMG_STD),
+    ])
+
+    dataset = ImageDatasetWithFilenames(os.path.join(DATA_PATH, DATASET_NAME, dataset_type),
+                                        transform=transform)
+
+    dataloader = torch.utils.data.DataLoader(
+        dataset, 
+        batch_size=BATCH_SIZE, 
+        shuffle=False, 
+        num_workers=1
     )
+
+    X = []
+    y = []
+    filenames = [] # [subfolder, filename]
+    imap = dataset.imap
+
+    for i, data in enumerate(tqdm(dataloader, unit='batch')):
+        (image, label, filename) = data
+        features = extract_features(image.to(DEVICE), feature_extractor, BATCH_SIZE)
+        # features = feature_extractor(image.to(DEVICE))[name2model[MODEL_NAME][2]].detach()
+        X.append(features)
+        y.append(label)
+        filenames.extend([[imap[int(label[j].cpu().numpy())], filename[j]] for j in range(len(filename))])
+    
+    dump(torch.vstack(X), os.path.join(DATA_FEATURES_PATH, DATASET_NAME, f'X_{MODEL_NAME}_{dataset_type}.pickle'))
+    dump(torch.hstack(y), os.path.join(DATA_FEATURES_PATH, DATASET_NAME, f'y_{MODEL_NAME}_{dataset_type}.pickle'))
+    dump(filenames, os.path.join(DATA_FEATURES_PATH, DATASET_NAME, f'f_{MODEL_NAME}_{dataset_type}.pickle'))
+
+
+def train_svm(verbose=False, kernel='linear', kernel_params={}):
+    '''
+    Trains and saves the linear SVM model.
+    '''
+    X_train = load(os.path.join(DATA_FEATURES_PATH, DATASET_NAME, f'X_{MODEL_NAME}_train.pickle')).cpu().numpy()
+    y_train = load(os.path.join(DATA_FEATURES_PATH, DATASET_NAME, f'y_{MODEL_NAME}_train.pickle')).cpu().numpy()
+
+    clf = OneVsRestClassifier(SVC(kernel=kernel, verbose=verbose, **kernel_params))
+
+    clf.fit(X_train, y_train)
+
+    dump(clf, os.path.join(MODEL_PATH, DATASET_NAME, f'model_svm_{MODEL_NAME}.pickle'))
+
+
+def test_svm():
+    '''
+    Test the trained model on the test set.
+    '''
+    X_test = load(os.path.join(DATA_FEATURES_PATH, DATASET_NAME, f'X_{MODEL_NAME}_test.pickle')).cpu().numpy()
+    y_test = load(os.path.join(DATA_FEATURES_PATH, DATASET_NAME, f'y_{MODEL_NAME}_test.pickle')).cpu().numpy()
+
+    clf = load(os.path.join(MODEL_PATH, DATASET_NAME, f'model_svm_{MODEL_NAME}.pickle'))
+
+    y_pred = clf.predict(X_test)
+    print(f'Accuracy: {accuracy_score(y_test, y_pred)}')
+
+
+def set_nn_weights():
+    model = build_model(MODEL_NAME, NUM_CLASSES, BASE_MODEL_BIAS)
+    model.load_state_dict(torch.load(os.path.join(MODEL_PATH, DATASET_NAME, f'model_best_{BEST_MODEL}_{MODEL_NAME}.pth'), weights_only=True))
+    model = model.to(DEVICE)
+
+    clf = load(os.path.join(MODEL_PATH, DATASET_NAME, f'model_svm_{MODEL_NAME}.pickle'))
+
+    class_layer_name = name2model[MODEL_NAME][3]
+
+    for i in range(len(clf.estimators_)):
+        print(f'Class {i}...')
+        with torch.no_grad():
+            w = clf.estimators_[i].coef_
+            w.setflags(write=1)
+            b = clf.estimators_[i].intercept_
+            b.setflags(write=1)
+            if MODEL_NAME.startswith('convnext'):
+                getattr(model, class_layer_name)[2].weight[i,:] = torch.nn.Parameter(torch.from_numpy(w))
+                getattr(model, class_layer_name)[2].bias[i] = torch.nn.Parameter(torch.from_numpy(b))
+            else:
+                getattr(model, class_layer_name).weight[i,:] = torch.nn.Parameter(torch.from_numpy(w))
+                getattr(model, class_layer_name).bias[i] = torch.nn.Parameter(torch.from_numpy(b))
+
+    torch.save(model.state_dict(), os.path.join(MODEL_PATH, DATASET_NAME, f'model_best_{BEST_MODEL}_{MODEL_NAME}_SVM.pth'))
+
+
+def visualize(img_test_path, positive=True, title=True):
+    img_test = Image.open(img_test_path)
+    if img_test.mode != 'RGB':
+        img_test = img_test.convert('RGB')
+
+    transform = v2.Compose([
+        v2.Resize((IMG_SIZE, IMG_SIZE)),
+        v2.ToImage(), 
+        v2.ToDtype(torch.float32, scale=True),
+        v2.Normalize(mean=IMG_MEAN, std=IMG_STD),
+    ])
+    img_test = transform(img_test)
+
+    model = build_model(MODEL_NAME, NUM_CLASSES, BASE_MODEL_BIAS)
+    model.load_state_dict(torch.load(os.path.join(MODEL_PATH, DATASET_NAME, f'model_best_{BEST_MODEL}_{MODEL_NAME}.pth'), weights_only=True))
+    model = model.to(DEVICE)
+    model.eval()
+
+    feature_vector_extractor = create_feature_extractor(model, return_nodes=[name2model[MODEL_NAME][2]]) # feature vector (before classification layer) extractor / HARD CODED 'avgpool'!!!
+    x_test = feature_vector_extractor(img_test.unsqueeze(0).to(DEVICE))[name2model[MODEL_NAME][2]]
+    if MODEL_NAME.startswith('densenet'):
+        x_test = F.relu(x_test, inplace=True)
+        x_test = F.adaptive_avg_pool2d(x_test, (1, 1))
+        x_test = torch.flatten(x_test, 1)
+    x_test = x_test.detach().squeeze().cpu().numpy()
+
+    X_train = load(os.path.join(DATA_FEATURES_PATH, DATASET_NAME, f'X_{MODEL_NAME}_train.pickle')).cpu().numpy()
+    y_train = load(os.path.join(DATA_FEATURES_PATH, DATASET_NAME, f'y_{MODEL_NAME}_train.pickle')).cpu().numpy()
+    
+    filenames_train = load(os.path.join(DATA_FEATURES_PATH, DATASET_NAME, f'f_{MODEL_NAME}_train.pickle'))
+
+    clf = load(os.path.join(MODEL_PATH, DATASET_NAME, f'model_svm_{MODEL_NAME}.pickle'))
+
+    decision_scores = []
+    for i in clf.classes_:
+        score = clf.estimators_[i].decision_function([x_test])
+        decision_scores.append(score[0])
+
+    if max(decision_scores) < 0:
+        print('EVERY PREDICTION IS NEGATIVE IN OVR!')
+        # exit(0)
+
+    pred_y = np.argmax(decision_scores)
+    
+    print(f'Prediction: {pred_y}')
+    print(f'Decision score: {decision_scores[pred_y]}')
+
+    alpha_y = csr_matrix(
+        (
+            clf.estimators_[pred_y].dual_coef_[0],
+            (
+                [0] * len(clf.estimators_[pred_y].dual_coef_[0]), 
+                clf.estimators_[pred_y].support_
+             )
+        ),
+        shape=(1, X_train.shape[0])
+    )
+    score2 = alpha_y @ (X_train @ x_test.T) + clf.estimators_[pred_y].intercept_
+    print(f'Decision score (verif.): {score2[0]}')
+
+    simi = alpha_y.multiply(X_train @ x_test.T)
+    simi_only = X_train @ x_test.T
+    coefs = list(zip(simi.data, simi.nonzero()[1]))
+
+    simi = np.array(simi.todense()).squeeze()
+
+    positive_coefs = filter(lambda c: c[0] > 0, coefs)
+    negative_coefs = filter(lambda c: c[0] < 0, coefs)
+    pos_first = sorted(list(positive_coefs), key=lambda c: c[0], reverse=True)[:10] # 10 most similar
+    neg_first = sorted(list(negative_coefs), key=lambda c: c[0], reverse=False)[:10] # 10 most similar "on the other side": high similarity * alpha, but labelled -1
+    print(pos_first)
+    print(neg_first)
+
+    if not positive:
+        pos_first = neg_first
+
+    figure = plt.figure(figsize=(8, 8))
+    cols, rows = 3, 3
+    for i in range(min(cols * rows, len(pos_first))):
+        fname = os.path.join(DATA_PATH, DATASET_NAME, 'train', filenames_train[pos_first[i][1]][0], filenames_train[pos_first[i][1]][1])
+        img = np.array(Image.open(fname).convert('RGB'))
+        figure.add_subplot(rows, cols, i+1)
+        plt.xticks([])
+        plt.yticks([])
+        # print(filenames_train[pos_first[i][1]][0], filenames_train[pos_first[i][1]][1], pos_first[i][1], X_train[pos_first[i][1]])
+        print(simi[pos_first[i][1]])
+        print(f'({simi_only[pos_first[i][1]]:.4f}, {alpha_y[0,pos_first[i][1]]})')
+        if title:
+            plt.title(f'{filenames_train[pos_first[i][1]][0]}\n{simi[pos_first[i][1]]:.4f} ({simi_only[pos_first[i][1]]:.4f})')
+        plt.imshow(img.squeeze())
+    
+    plt.subplots_adjust(wspace=0.1, hspace=0.1)
+    plt.axis('off')
+    plt.show()
+
+
+def visualize2(img_test_path, layer_name, positive=True, title=True, show=True):
+    img_test = Image.open(img_test_path)
+    if img_test.mode != 'RGB':
+        img_test = img_test.convert('RGB')
+
+    model = build_model(MODEL_NAME, NUM_CLASSES, BASE_MODEL_BIAS)
+    model.load_state_dict(torch.load(os.path.join(MODEL_PATH, DATASET_NAME, f'model_best_{BEST_MODEL}_{MODEL_NAME}_SVM.pth'), weights_only=True))
+    # model.load_state_dict(torch.load(os.path.join(MODEL_PATH, DATASET_NAME, f'model_best_{BEST_MODEL}_{MODEL_NAME}.pth'), weights_only=True))
+    model = model.to(DEVICE)
+    model.eval()
+
+    clf_svm = load(os.path.join(MODEL_PATH, DATASET_NAME, f'model_svm_{MODEL_NAME}.pickle'))
+    X_train = load(os.path.join(DATA_FEATURES_PATH, DATASET_NAME, f'X_{MODEL_NAME}_train.pickle')).cpu().numpy()
+    y_train = load(os.path.join(DATA_FEATURES_PATH, DATASET_NAME, f'y_{MODEL_NAME}_train.pickle')).cpu().numpy()
+    filenames = load(os.path.join(DATA_FEATURES_PATH, DATASET_NAME, f'f_{MODEL_NAME}_train.pickle')) # do we need filenames saved for every model???
+
+    transform = v2.Compose([
+        v2.Resize((IMG_SIZE, IMG_SIZE)),
+        v2.ToImage(), 
+        v2.ToDtype(torch.float32, scale=True),
+        v2.Normalize(mean=IMG_MEAN, std=IMG_STD),
+    ])
+    img_test = transform(img_test)
+    
+    trainset = ImageDatasetWithFilenames(os.path.join(DATA_PATH, DATASET_NAME, 'train'),
+                                        transform=transform)
 
     trainloader = torch.utils.data.DataLoader(
         trainset, 
-        batch_size=BATCH_SIZE_XSVM, 
-        # shuffle=True, 
-        num_workers=1,
-        sampler=sampler
-    )
-
-    validationloader = torch.utils.data.DataLoader(
-        validationset, 
-        batch_size=BATCH_SIZE_XSVM, 
+        batch_size=1, 
         shuffle=False, 
         num_workers=1
     )
 
-    testset = ImageDatasetWithFilenames(DATA_PATH_TEST,
-                                        transform=v2.Compose([
-                                            v2.Resize(256),
-                                            v2.CenterCrop(224),
-                                            v2.ToImage(), 
-                                            v2.ToDtype(torch.float32, scale=True),
-                                            v2.Normalize(mean=IMG_MEAN, std=IMG_STD),
-                                        ]))
+    feature_vector_extractor = create_feature_extractor(model, return_nodes=[name2model[MODEL_NAME][2]]) # feature vector (before classification layer) extractor / HARD CODED 'avgpool'!!!
 
-    testloader = torch.utils.data.DataLoader(
-        testset, 
-        batch_size=BATCH_SIZE_XSVM, 
-        shuffle=False, 
-        num_workers=1
+    x_test = feature_vector_extractor(img_test.unsqueeze(0).to(DEVICE))[name2model[MODEL_NAME][2]]
+    if MODEL_NAME.startswith('densenet'):
+        x_test = F.relu(x_test, inplace=True)
+        x_test = F.adaptive_avg_pool2d(x_test, (1, 1))
+        x_test = torch.flatten(x_test, 1)
+    x_test = x_test.detach().squeeze().cpu().numpy()
+
+    # print(x_test.shape)
+    # exit(0)
+
+    decision_scores = []
+    for i in clf_svm.classes_:
+        score = clf_svm.estimators_[i].decision_function([x_test])
+        decision_scores.append(score[0])
+
+    if max(decision_scores) < 0:
+        print('EVERY PREDICTION IS NEGATIVE IN OVR!')
+
+    pred_y = np.argmax(decision_scores)
+    print(f'Prediction: {pred_y}')
+    print(f'Decision score: {decision_scores[pred_y]}')
+
+    pred_y = clf_svm.predict([x_test])[0]
+    print(f'Prediction (verif.): {pred_y}')
+    alpha_y = csr_matrix(
+        (
+            clf_svm.estimators_[pred_y].dual_coef_[0],
+            (
+                [0] * len(clf_svm.estimators_[pred_y].dual_coef_[0]), 
+                clf_svm.estimators_[pred_y].support_
+             )
+        ),
+        shape=(1, X_train.shape[0])
     )
+    score2 = alpha_y @ (X_train @ x_test.T) + clf_svm.estimators_[pred_y].intercept_
+    print(f'Decision score (verif.): {score2[0]}')
 
-    feature_extractor = create_feature_extractor(model, return_nodes=[name2model[MODEL_NAME][2]])
+    simi = alpha_y.multiply(X_train @ x_test.T)
+    simi_only = X_train @ x_test.T
+    coefs = list(zip(simi.data, simi.nonzero()[1]))
 
-    vacc = 0
-    acc = 0
-    avg_sv_num = 0
-    nsv_pos_neg = 0
+    simi = np.array(simi.todense()).squeeze()
 
-    if is_train:
-        W, alpha, index_map = train_torch(trainloader, feature_extractor, lamb=1)
-        
-        dump([W, alpha, index_map], f'models/xsvm_{MODEL_NAME}_{id}.pickle')
+    positive_coefs = filter(lambda c: c[0] > 0, coefs)
+    negative_coefs = filter(lambda c: c[0] < 0, coefs)
+    pos_first = sorted(list(positive_coefs), key=lambda c: c[0], reverse=True)[:10] # 10 most similar: (coef, index)
+    neg_first = sorted(list(negative_coefs), key=lambda c: c[0], reverse=False)[:10] # 10 most similar "on the other side": high similarity * alpha, but labelled -1
+    print(f'Most similar: {pos_first}')
+    print(f'Most similar, but negative: {neg_first}')
+    if not positive:
+        pos_first = neg_first
 
-        test_torch(validationloader, feature_extractor, W)
-        acc = test_torch(testloader, feature_extractor, W)
-    else:
-        print(f'ID={id}:')
-        W, alpha, index_map = load(f'models/xsvm_{MODEL_NAME}_{id}.pickle')
-        vacc = test_torch(validationloader, feature_extractor, W)
-        acc = test_torch(testloader, feature_extractor, W)
-        avg_sv_num = alpha.count_nonzero() / NUM_CLASSES
-        for c in range(NUM_CLASSES):
-            nz_ind = alpha[:, c].nonzero()[0]
-            y_nz = one_hot_torch(torch.tensor([trainloader.dataset[nzi][1] for nzi in nz_ind]), num_classes=NUM_CLASSES)
-            a_y = torch.tensor(alpha[nz_ind, c].todense()) * y_nz[:, c].unsqueeze(dim=1)
-            nsv_pos_neg += ((a_y > 0) * 1).sum() / alpha[:, c].count_nonzero()
-            print(f'{c}: {((a_y > 0) * 1).sum(), alpha[:, c].count_nonzero()}')
+    A_grad = []
+    def hook_b(module, grad_in, grad_out, vals=A_grad):
+        vals.append(grad_out[0].detach())
+        print(f'Grad shape: {grad_out[0].shape}')
 
-    nsv_pos_neg /= NUM_CLASSES
+    activation = []
+    def hook_f(module, input, output, vals=activation):
+        vals.append(output)
+        print(f'Activation shape: {output.shape}')
 
-    return acc, vacc, avg_sv_num, nsv_pos_neg
+    layer_b = reduce(getattr, layer_name.split('.'), model)
+    layer_f = reduce(getattr, name2model[MODEL_NAME][2].split('.'), model)
 
+    f_hook_b = layer_b.register_full_backward_hook(hook_b) # calculating the gradients
+    f_hook_f = layer_f.register_forward_hook(hook_f) # a forward hook is needed to obtain the activation vectors, for the dot product calculation not to be detached from the graph, and the gradients to be calculated
 
-def test_and_visualize(image_path, id=0):
-    model = build_model(MODEL_NAME, NUM_CLASSES)
-    model.load_state_dict(torch.load(f'models/model_best_{BEST_MODEL}_{MODEL_NAME}.pth', weights_only=True))
-    model = model.to(DEVICE)
-    model.eval()
+    feature_vector_test = feature_vector_extractor(img_test.unsqueeze(0).to(DEVICE))[name2model[MODEL_NAME][2]]
+    if MODEL_NAME.startswith('densenet'):
+        feature_vector_test = F.relu(feature_vector_test, inplace=True)
+        feature_vector_test = F.adaptive_avg_pool2d(feature_vector_test, (1, 1))
+        feature_vector_test = torch.flatten(feature_vector_test, 1)
+    feature_vector_test = feature_vector_test.squeeze()
 
-    trainset = load(TRAINSET)
+    heatmaps = []
+    heatmap_filenames = []
 
-    feature_extractor = create_feature_extractor(model, return_nodes=[name2model[MODEL_NAME][2]])
-
-    image = Image.open(image_path)
-    image = transforms.ToTensor()(image).unsqueeze(0).to(DEVICE)
-    image = transforms.Resize((224, 224))(image)
-    image = transforms.Normalize(mean=IMG_MEAN, std=IMG_STD)(image)
-    
-    X = get_features(image, feature_extractor)
-    X = torch.cat((X, torch.ones((X.shape[0], 1)).to(DEVICE)), dim=1)
-
-    W, alpha, index_map = load(f'models/xsvm_{MODEL_NAME}_{id}.pickle')
-
-    pred = torch.argmax(torch.matmul(X, W), axis=1).cpu().numpy()
-
-    inv_index_map = {ind:filename for (filename, ind) in index_map.items()}
-    label_map = dict(trainset.dataset.images)
-    folder_class_map = trainset.dataset.map
-    folder_class_map_inv = {v:k for k, v in folder_class_map.items()}
-
-    nonzeros = []
-    data_info = []
-    for i in alpha[:, pred].nonzero()[0]:
-        filename = inv_index_map[i]
-        label = label_map[filename]
-        class_folder = folder_class_map_inv[label]
-        img_path = os.path.join(trainset.dataset.img_dir, class_folder, filename)
-        img = Image.open(img_path)
-        img = transforms.ToTensor()(img).unsqueeze(0).to(DEVICE)
-        img = transforms.Resize((224, 224))(img)
-        img = transforms.Normalize(mean=IMG_MEAN, std=IMG_STD)(img)
-        nonzeros.append(img)
-        data_info.append([filename, label, class_folder, img_path, alpha[i, pred]])
-
-    X2 = get_features(torch.vstack(nonzeros), feature_extractor)
-    X2 = torch.cat((X2, torch.ones((X2.shape[0], 1)).to(DEVICE)), dim=1)
-
-    a = alpha[alpha[:, pred].nonzero()[0], pred].todense()
-    sim = X.matmul(X2.T).cpu().numpy()
-    a_sim = np.squeeze(np.asarray(np.multiply(sim, a)))
-    labels = np.array([d[1] for d in data_info])
-    pos_ind = np.argwhere(labels == pred).squeeze(1)
-    neg_ind = np.argwhere(labels != pred).squeeze(1)
-    largest_pos_ind = pos_ind[np.flip(np.argsort(a_sim[pos_ind]))]
-    largest_neg_ind = neg_ind[np.flip(np.argsort(a_sim[neg_ind]))]
-    
-    figure = plt.figure(figsize=(8, 8))
+    if show:
+        figure = plt.figure(figsize=(8, 8))
     cols, rows = 3, 3
-    for i in range(1, cols * rows + 1):
-        img = np.array(Image.open(data_info[largest_pos_ind[i]][3]).convert('RGB'))
-        figure.add_subplot(rows, cols, i)
-        plt.axis('off')
-        plt.title(f'{data_info[largest_pos_ind[i]][2]}\n{a_sim[largest_pos_ind[i]]:.4f}')
-        plt.imshow(img.squeeze())
-    
-    plt.axis('off')
-    plt.show()
+    for i in range(min(cols * rows, len(pos_first))):
+        (image, label, filename) = trainloader.dataset[pos_first[i][1]]
+        print(label, filename, pos_first[i][1], filenames[pos_first[i][1]])
 
-    figure = plt.figure(figsize=(8, 8))
-    cols, rows = 3, 3
-    for i in range(1, cols * rows + 1):
-        img = np.array(Image.open(data_info[largest_neg_ind[i]][3]).convert('RGB'))
-        figure.add_subplot(rows, cols, i)
-        plt.axis('off')
-        plt.title(f'{data_info[largest_neg_ind[i]][2]}\n{a_sim[largest_neg_ind[i]]:.4f}')
-        plt.imshow(img.squeeze())
+        img_train = Image.open(os.path.join(DATA_PATH, DATASET_NAME, 'train', filenames[pos_first[i][1]][0], filenames[pos_first[i][1]][1]))
+        if img_train.mode != 'RGB':
+            img_train = img_train.convert('RGB')
+
+        input = image.to(DEVICE).unsqueeze(0)
+
+        with torch.enable_grad():
+            g_train = feature_vector_extractor(input)[name2model[MODEL_NAME][2]]
+            if MODEL_NAME.startswith('densenet'):
+                g_train = F.relu(g_train, inplace=True)
+                g_train = F.adaptive_avg_pool2d(g_train, (1, 1))
+                g_train = torch.flatten(g_train, 1)
+            g_train = g_train.squeeze()
+            loss = g_train.dot(feature_vector_test.detach())
+
+        model.zero_grad()
+        loss.backward(retain_graph=True)
+
+        alpha_gradcam = F.adaptive_avg_pool2d(A_grad[-1], (1, 1)) # averaging every feature map
+        hmap = F.relu(torch.sum(alpha_gradcam * A_grad[-1], dim=1).squeeze(0)) # heatmap
+        hmap /= torch.max(hmap) # normalize
+
+        heatmaps.append(cv2.resize(hmap.cpu().numpy(), (img_train.size[0], img_train.size[1])))
+        heatmap_filenames.append(os.path.join(*filenames[pos_first[i][1]]))
+
+        # visualize/save heatmap:
+        orig = np.array(Image.open(img_test_path).convert('RGB'))
+        orig_resized = cv2.resize(orig, (IMG_SIZE, IMG_SIZE))
+        map_r = cv2.resize(hmap.cpu().numpy(), (IMG_SIZE, IMG_SIZE))
+
+        cmap = cv2.COLORMAP_JET
+
+        heatmap = cv2.applyColorMap(np.uint8(255 * map_r), cmap)
+        heatmap = cv2.cvtColor(heatmap, cv2.COLOR_RGB2BGR)
+        overlay = cv2.addWeighted(cv2.resize(np.array(img_train), (IMG_SIZE, IMG_SIZE)), 0.5, heatmap, 0.5, 0)
+
+        if show:
+            figure.add_subplot(rows, cols, i+1)
+            plt.xticks([])
+            plt.yticks([])
+            if title:
+                plt.title(f'{filenames[pos_first[i][1]][0]}\n{simi[pos_first[i][1]]:.4f} ({simi_only[pos_first[i][1]]:.4f})')
+            plt.imshow(cv2.resize(overlay, (img_train.size[0], img_train.size[1])))
     
-    plt.axis('off')
-    plt.show()
+    if show:
+        plt.subplots_adjust(wspace=0.1, hspace=0.1)
+        plt.axis('off')
+        plt.show()
+
+    return heatmaps, heatmap_filenames
+
+
+# def select_test_images_cub(data_path, images_file, parts_file, N=1):
+#     f = codecs.open(images_file, 'r')
+#     data = f.readlines()
+#     f.close()
+#     image_map = {}
+#     image_map_r = {}
+#     for r in data:
+#         rr = r.strip().split(' ')
+#         image_map[rr[1]] = rr[0]
+#         image_map_r[rr[0]] = rr[1]
+
+#     parts = {}
+#     f = codecs.open(parts_file, 'r')
+#     data = f.readlines()
+#     f.close()
+#     for r in data:
+#         rr = r.strip().split(' ')
+#         if rr[4] == '1':
+#             if parts.get(image_map_r[rr[0]], -1) == -1:
+#                 parts[image_map_r[rr[0]]] = [(rr[1], rr[2], rr[3])]
+#             else:
+#                 parts[image_map_r[rr[0]]].append((rr[1], rr[2], rr[3]))
+
+#     selected = []
+    
+#     for d in os.listdir(os.path.join(data_path, 'cub_200_full', 'test')):
+#         filenames = [f for f in os.listdir(os.path.join(data_path, 'cub_200_full', 'test', d))]
+#         r = np.random.randint(low=0, high=len(filenames), size=N)
+#         for rr in r:
+#             fname = os.path.join(d, filenames[rr])
+#             selected.append((fname, parts[fname]))
+
+#     dump_json(selected, os.path.join(DATA_FEATURES_PATH, 'cub_features.json'))
+
+
+def select_test_images_cub(data_path, N=1):
+    selected = []
+
+    for d in os.listdir(os.path.join(data_path, 'cub_200_full', 'test')):
+        filenames = [f for f in os.listdir(os.path.join(data_path, 'cub_200_full', 'test', d))]
+        r = np.random.randint(low=0, high=len(filenames), size=N)
+        for rr in r:
+            fname = os.path.join(d, filenames[rr])
+            selected.append(fname)
+
+    dump_json(selected, os.path.join(DATA_FEATURES_PATH, 'cub_features.json'))
+
+
+def generate_gradcams(data_path, layer_name):
+    files = load_json(os.path.join(DATA_FEATURES_PATH, 'cub_features.json'))
+    heatmaps = []
+    for f in files:
+        img_path = os.path.join(data_path, 'cub_200_full', 'test', f)
+        h, fnames = visualize2(img_path, layer_name, positive=True, title=False, show=False)
+        heatmaps.append((fnames, h))
+    dump(heatmaps, os.path.join(DATA_FEATURES_PATH, f'cub_{layer_name}.pickle'))
+
+
+def calculate_diversity(images_file, parts_file, layer_name, threshold=0.8):
+    f = codecs.open(images_file, 'r')
+    data = f.readlines()
+    f.close()
+    image_map = {}
+    image_map_r = {}
+    for r in data:
+        rr = r.strip().split(' ')
+        image_map[rr[1]] = rr[0]
+        image_map_r[rr[0]] = rr[1]
+
+    parts = {}
+    f = codecs.open(parts_file, 'r')
+    data = f.readlines()
+    f.close()
+    for r in data:
+        rr = r.strip().split(' ')
+        if rr[4] == '1':
+            if parts.get(image_map_r[rr[0]], -1) == -1:
+                parts[image_map_r[rr[0]]] = [(rr[1], rr[2], rr[3])]
+            else:
+                parts[image_map_r[rr[0]]].append((rr[1], rr[2], rr[3]))
+
+    heatmaps = load(os.path.join(DATA_FEATURES_PATH, f'cub_{layer_name}.pickle'))
+    score = []
+    for img in heatmaps:
+        p = {}
+        for i in range(len(img[0])):
+            fname = img[0][i]
+            hmap = img[1][i]
+            hmap_bin = hmap > threshold
+            for part in parts[fname]:
+                if hmap_bin[int(float(part[2])), int(float(part[1]))]:
+                    p[part[0]] = p.get(part[0], 0) + 1
+        # print(p)
+        if len(p) > 0:
+            score.append(float(len(p)) / np.mean(list(p.values())))
+        else:
+            score.append(0.)
+
+    # print(f'Diversity: {np.mean(score)} (+/- {np.std(score)})')
+    return np.mean(score)
 
 
 if __name__ == '__main__':
-    print(f'Device = {DEVICE}')
+    # MODEL_NAME = 'densenet121'
+    # generate_features('train')
+    # generate_features('test')
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--train', required=False, action='store_true')
-    parser.add_argument('--test', required=False, action='store_true')
-    parser.add_argument('--vis', required=False)
+    # train_svm(verbose=True, kernel='linear')
+    # # train_svm(verbose=True, kernel='poly', kernel_params={'degree': 4})
 
-    args = parser.parse_args()
+    # test_svm()
 
-    if args.train:
-        train_test_xsvm(True, 0)
-    elif args.test:
-        a, va, n, pn = train_test_xsvm(False, 0)
-        print(f'Accuracy: {a}')
-        print(f'Validation accuracy: {va}')
-        print(f'Number of support vectors: {n}')
-        print(f'Ratio of pos. and neg. SVs: {pn}')
-    elif args.vis:
-        test_and_visualize(args.vis)
+    # set_nn_weights()
+
+    # visualize('/home/miafranc/zzz/xsvm/data/stanford_dogs/test/n02085620-Chihuahua/n02085620_10074.jpg',
+    #           positive=True,
+    #           title=False)
+
+    # select_test_images_cub('/home/miafranc/zzz/xsvm/data/',
+    #                        1)
+    # exit(0)
+
+    # img_test_path = '/home/miafranc/zzz/xsvm/data/cub_200_full/test/001.Black_footed_Albatross/Black_Footed_Albatross_0046_18.jpg'
+    # img_test = Image.open(img_test_path)
+    # # plt.imshow(img_test)
+    # # plt.plot([312], [182], 'ro', markersize=12, linewidth=3)
+    # # plt.plot([183], [101], 'ro', markersize=2, linewidth=1)
+    # # plt.show()
+
+    # # a = np.array(img_test)[:, :, 0]
+    # a = np.array(img_test)
+    # # a[183, 101] = [255, 0, 0]
+    # a[101, 183] = [255, 0, 0]
+    # img_test = Image.fromarray(a)
+    # # print(a)
+    # # print(a[183, 101])
+
+    # plt.imshow(img_test)
+    # plt.show()
+
+    # exit(0)
+
+    # model = build_model('resnet50', NUM_CLASSES, BASE_MODEL_BIAS)
+    # model = build_model('densenet121', NUM_CLASSES, BASE_MODEL_BIAS)
+    # print(model)
+    # exit(0)
+
+    # generate_gradcams('/home/miafranc/zzz/xsvm/data/',
+    #                 #   'layer3.5.conv1')
+    #                 #   'layer4.0.conv1')
+    #                 #   'layer4.1.conv1')
+    #                 #   'features.denseblock4.denselayer16.conv1')
+    #                 #   'features.denseblock4.denselayer14.conv2')
+    #                   'features.denseblock4.denselayer15.conv1')
+    # exit(0)
+
+    # t = 0.85
+
+    # layers = ['layer3.5.conv1', 'layer4.0.conv1', 'layer4.1.conv1', 
+    #           'features.denseblock4.denselayer14.conv2', 'features.denseblock4.denselayer15.conv1', 'features.denseblock4.denselayer16.conv1']
+    # scores = {l:0 for l in layers}
+    # thresholds = []
+    # for t in [0.5 + 0.05*i for i in range(10)]:
+    #     print(t)
+    #     thresholds.append(t)
+    #     for l in layers:
+    #         scores[l] += calculate_diversity('/home/miafranc/zzz/xsvm/x3/cub/images.txt', 
+    #                         '/home/miafranc/zzz/xsvm/x3/cub/part_locs.txt', 
+    #                         l,
+    #                         t)
+
+    # for l in layers:
+    #     print(f'{l}: {scores[l] / len(thresholds)}')
+
+    # exit(0)
+
+    visualize('/home/miafranc/zzz/xsvm/data/cub_200_full/test/001.Black_footed_Albatross/Black_Footed_Albatross_0003_796136.jpg',
+              positive=False,
+              title=True)
+    exit(0)
+
+    # heatmaps = visualize2('/home/miafranc/zzz/xsvm/data/stanford_dogs/test/n02085620-Chihuahua/n02085620_10074.jpg',
+    # heatmaps = visualize2('/home/miafranc/zzz/xsvm/data/cub_200_full/test/001.Black_footed_Albatross/Black_Footed_Albatross_0046_18.jpg',
+    heatmaps = visualize2('/home/miafranc/zzz/xsvm/data/cub_200_full/test/001.Black_footed_Albatross/Black_Footed_Albatross_0003_796136.jpg',
+               layer_name='layer3.5.conv1', # resnet
+            #    layer_name='layer4.0.conv1', # resnet
+            #    layer_name='features.7.0.block.0', # convnext
+            #    layer_name='features.denseblock4.denselayer15.conv1', # densenet
+               positive=False,
+               title=False,
+               show=True)
+
+    # a1 = load('a_grad')
+    # a2 = load('a_grad2')
+    # print(len(a1))
+    # print(a1[0].shape)
+    # print(a1[1].shape)
+    # print(len(a2))
+    # print(a2[0].shape)
+    # print(a2[1].shape)
+    # for i in range(a1[0].shape[1]):
+    #     for j in range(a1[0].shape[2]):
+    #         for k in range(a1[0].shape[3]):
+    #             if a1[0][0,i,j,k] != a2[0][0,i,j,k]:
+    #                 print('jajj')
+
+    # gradcam('/home/miafranc/zzz/xsvm/data/stanford_dogs/test/n02085620-Chihuahua/n02085620_10074.jpg')
+    # gradcam2('/home/miafranc/zzz/xsvm/data/stanford_dogs/test/n02085620-Chihuahua/n02085620_10074.jpg')

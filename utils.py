@@ -1,11 +1,19 @@
 import torch
 import torchvision
 import torchvision.transforms as transforms
+from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 from sklearn.model_selection import train_test_split
 import pickle
 import codecs
 import numpy as np
+from sklearn.model_selection import StratifiedGroupKFold
+import os
+import random
+import datetime
+import json
+
+import settings
 
 
 def one_hot_np(v, num_classes):
@@ -25,6 +33,19 @@ def dump(obj, filename):
 def load(filename):
     f = codecs.open(filename, 'rb')
     obj = pickle.load(f)
+    f.close()
+    return obj
+
+
+def dump_json(obj, filename):
+    f = codecs.open(filename, 'w')
+    json.dump(obj, f, indent=2)
+    f.close()
+
+
+def load_json(filename):
+    f = codecs.open(filename, 'r')
+    obj = json.load(f)
     f.close()
     return obj
 
@@ -79,7 +100,34 @@ def calculate_mean_and_std(path, img_size):
     s = torch.sqrt((psum_sq/norm) - (m**2))
     print(f'Mean: {m}')
     print(f' Std: {s}')
-        
+
+
+def set_seed(seed=2):
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+
+def tb_writer(logdir_prefix, filename):
+    logdir = os.path.join(logdir_prefix, filename + '_' + datetime.datetime.now().strftime("%Y.%m.%d_%H-%M-%S"))
+    return SummaryWriter(log_dir=logdir)
+
+
+def dump_parameters(logdir, filename):
+    params = {}
+    for p in dir(settings):
+        if not p.startswith('_'):
+            params[p] = getattr(settings, p)
+
+    f = codecs.open(os.path.join(logdir, filename), 'w')
+    json.dump(params, f, indent=2)
+    f.close()
+
 
 if __name__ == '__main__':
-    calculate_mean_and_std('path_to_images', (224, 224))
+    calculate_mean_and_std('/home/miafranc/zzz/xsvm/data/!', (224, 224))
