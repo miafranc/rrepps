@@ -14,23 +14,31 @@ The json files in the above-mentioned directory are copies of the datasets in JS
 
 ### Training and testing vanilla CNNs
 
-For training and testing CNNs (currently implemented: ResNet-34, ResNet-50, DenseNet-121, DenseNet-161, ConvNeXt-T), `baseline.py` has to be used either with the `--train` or the `--test` arguments. 
+For training and testing CNNs; currently implemented: ResNet-34, ResNet-50, DenseNet-121, DenseNet-161, ConvNeXt-T.
 Every parameter (e.g. model used, learning rate, training and test image folders, etc.) is controlled via `settings.py`. 
 The description of the available parameters will be given below.
 
-...
+Command-line arguments:
+* `--train` - trains the CNN;
+* `--test` - tests the model;
+* `--svm` - if used with `--test`, tests the SVM;
+* `--finetuned` - if used with `--train`, fine-tunes the model; if used with `--test`, uses the fine-tuned SVM.
+
+Corruptions can also be applied to the test images via `settings.py`.
 
 ### The XSVM model
 
 The XSVM can be trained and tested using the `xsvm.py` script. 
-Similarly to the above, it has the following arguments:
+
+Command-line arguments:
+* `--generate` - generates the features for training;
 * `--train` - trains the SVM;
-* `--test` - test the SVM;
-* `--vis <filename>` - visualizes the 9 most influential positive and negative training examples.
+* `--test` - tests the SVM;
+* `--build_nn` - builds the neural network using the SVM's classifier weights; it is needed for performing the decomposed Grad-CAM, and to perform fine-tuning.
+* `--visualize FILENAME` -- visualizes the 9 most important positive examples (if negative are needed, it has to be changed in the code);
+* `--visualize_gradcam FILENAME` -- visualizes the 9 most important positive training examples showing the Grad-CAM saliency.
 
-...
-
-...
+Only the above options are reachable through command-line arguments, but everything described in the paper can be performed (e.g. calculating layer divesity) from code.
 
 ### Parameters
 
@@ -44,30 +52,30 @@ DATA_PATH = 'path_to_train_images' # the images has to be in different subfolder
 DATA_FEATURES_PATH = 'path_to_storing_feature_outputs'   # the same as above applies
 
 DATA_PERCENTAGE = 1.0 # percentage of data to be used; for fast experimentation one can lower this value
-VAL_SPIT = 0.2 # validation split
+VAL_SPIT = 0.2
 
-BATCH_SIZE = 64 # batch size when training the NN
-NUM_EPOCHS = 100 # number of epochs when training the NN
-PATIENCE = 20 # patience; currently StepLR is used with step_size=10 and gamma=0.1
-OPTIMIZER = 'sgd' # optimizer
-LR = 1e-3 # learning rate of the optimizer
+BATCH_SIZE = 64
+NUM_EPOCHS = 100
+PATIENCE = 20
+OPTIMIZER = 'sgd'
+LR = 1e-3
 MOMENTUM = 0.9 # momentum of SGD
 WEIGHT_DECAY = 1e-4 # weight decay of optimizer, if applicable
 
-NUM_EPOCHS_FINETUNE = 5
-LR_FINETUNE = 1e-4
+NUM_EPOCHS_FINETUNE = 5 # number of fine-tuning epochs
+LR_FINETUNE = 1e-4 # LR when fine-tuning
 
 SCHEDULER = 'cosine'
-STEP_SIZE = 10
-STEP_GAMMA = 0.1
-STEP_MULTI = [30, 60, 90]
+STEP_SIZE = 10 # for StepLR
+STEP_GAMMA = 0.1 # for StepLR and MultiStepLR
+STEP_MULTI = [30, 60, 90] # for MultiStepLR
 
 MODEL_NAME = 'resnet50'
-BASE_MODEL_BIAS = True
-BEST_MODEL = 'acc'
-MODEL_PATH = 'models/'
-SAVE_BEST_MODEL = True
-SAVE_MIN_ACC = 0.7
+BASE_MODEL_BIAS = True # wheather use bias or not
+BEST_MODEL = 'acc' # which perspective is considered (acc or loss)
+MODEL_PATH = 'models/' # where models are saved to and loaded from
+SAVE_BEST_MODEL = True # wheather to save the best model
+SAVE_MIN_ACC = 0.7 # accuracy threshold above which models are saved
 
 IMG_SIZE = 224
 IMG_MEAN = [0.4761, 0.4518, 0.3910] # mean for image normalization
@@ -90,4 +98,4 @@ CORRUPTION_PIXELATE_LEVEL = 2
 
 * CUB-200-2011: [https://www.vision.caltech.edu/datasets/cub_200_2011/](https://www.vision.caltech.edu/datasets/cub_200_2011/)
 * Stanford Dogs: [http://vision.stanford.edu/aditya86/ImageNetDogs/](http://vision.stanford.edu/aditya86/ImageNetDogs/)
-* Stanford Cars: [https://www.kaggle.com/datasets/jutrera/stanford-car-dataset-by-classes-folder](https://www.kaggle.com/datasets/jutrera/stanford-car-dataset-by-classes-folder)
+* Stanford Cars: [https://www.kaggle.com/datasets/jutrera/stanford-car-dataset-by-classes-folder](https://www.kaggle.com/datasets/jutrera/stanford-car-dataset-by-classes-folder) ([https://docs.pytorch.org/vision/main/generated/torchvision.datasets.StanfordCars.html](https://docs.pytorch.org/vision/main/generated/torchvision.datasets.StanfordCars.html))
