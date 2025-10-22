@@ -527,6 +527,19 @@ def calculate_diversity(images_file, parts_file, layer_name, threshold=0.8):
 
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--train', required=False, action='store_true')
+    parser.add_argument('--test', required=False, action='store_true')
+    # parser.add_argument('--svm', required=False, action='store_true')
+    # parser.add_argument('--finetuned', required=False, action='store_true')
+
+    args = parser.parse_args()
+
+    if args.train:
+        pass
+
+    exit(0)
+
     # MODEL_NAME = 'densenet121'
     # generate_features('train')
     # generate_features('test')

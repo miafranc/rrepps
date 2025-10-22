@@ -411,91 +411,24 @@ def fine_tune():
 if __name__ == '__main__':
     set_seed(42)
 
-    # parser = argparse.ArgumentParser()
-    # parser.add_argument('--train', required=False, action='store_true')
-    # parser.add_argument('--test', required=False, action='store_true')
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--train', required=False, action='store_true')
+    parser.add_argument('--test', required=False, action='store_true')
+    parser.add_argument('--svm', required=False, action='store_true')
+    parser.add_argument('--finetuned', required=False, action='store_true')
 
-    # args = parser.parse_args()
+    args = parser.parse_args()
 
-    # if args.train:
-    #     train()
-    # elif args.test:
-    #     test()
-
-    # train()
-    # test(svm=True, finetuned=True)
-
-    for dname in ['cub_200_full', 'stanford_dogs', 'stanford_cars']:
-        if dname == 'cub_200_full':
-            # CUB:
-            DATASET_NAME = dname
-            NUM_CLASSES = 200
-            IMG_MEAN = [0.485, 0.456, 0.406]
-            IMG_STD  = [0.229, 0.224, 0.225]
-        elif dname == 'stanford_dogs':
-            # Dogs:
-            DATASET_NAME = dname
-            NUM_CLASSES = 120
-            IMG_MEAN = [0.4761, 0.4518, 0.3910]
-            IMG_STD  = [0.2580, 0.2525, 0.2571]
-        elif dname == 'stanford_cars':
-            # Cars:
-            NUM_CLASSES = 196
-            IMG_MEAN = [0.4700, 0.4596, 0.4546]
-            IMG_STD  = [0.2889, 0.2878, 0.2962]
-        else:
-            raise Exception('ERROR!')
-
-        for mname in ['resnet34', 'resnet50', 'densenet121', 'densenet161', 'convnext_tiny']:
-            DATASET_NAME = dname
-            MODEL_NAME = mname
-
-            print(f'{dname}  - {mname}:\n=============================')
+    if args.train:
+        if args.finetuned:
             fine_tune()
-
-    # exit(0)
-
-    # fine_tune()
-
-    # test(svm=True, finetuned=True)
-
-    for dname in ['cub_200_full', 'stanford_dogs', 'stanford_cars']:
-        if dname == 'cub_200_full':
-            # CUB:
-            DATASET_NAME = dname
-            NUM_CLASSES = 200
-            IMG_MEAN = [0.485, 0.456, 0.406]
-            IMG_STD  = [0.229, 0.224, 0.225]
-        elif dname == 'stanford_dogs':
-            # Dogs:
-            DATASET_NAME = dname
-            NUM_CLASSES = 120
-            IMG_MEAN = [0.4761, 0.4518, 0.3910]
-            IMG_STD  = [0.2580, 0.2525, 0.2571]
-        elif dname == 'stanford_cars':
-            # Cars:
-            NUM_CLASSES = 196
-            IMG_MEAN = [0.4700, 0.4596, 0.4546]
-            IMG_STD  = [0.2889, 0.2878, 0.2962]
         else:
-            raise Exception('ERROR!')
-
-        for mname in ['resnet34', 'resnet50', 'densenet121', 'densenet161', 'convnext_tiny']:
-            DATASET_NAME = dname
-            MODEL_NAME = mname
-
-            print(f'{dname}  - {mname}:\n=============================')
-            test(svm=True, finetuned=True)
-
-            # a = []
-            a_svm = []
-            for corr in ['gaussian_blur', 'speckle_noise', 'brightness', 'contrast', 'pixelate']:
-                CORRUPTION = corr
-                # acc, _, _ = test(svm=False)
-                # a.append(acc)
-                acc, _, _ = test(svm=True, finetuned=True)
-                a_svm.append(acc)
-            # print(np.mean(a))
-            print(f'{dname}  - {mname}:\n=============================')
-            print(np.mean(a_svm))
-    
+            train()
+    elif args.test:
+        if args.svm:
+            if args.finetuned:
+                test(svm=True, finetuned=True)
+            else:
+                test(svm=True, finetuned=False)
+        else:
+            test()
