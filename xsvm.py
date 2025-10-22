@@ -294,9 +294,6 @@ def visualize2(img_test_path, layer_name, positive=True, title=True, show=True):
         x_test = torch.flatten(x_test, 1)
     x_test = x_test.detach().squeeze().cpu().numpy()
 
-    # print(x_test.shape)
-    # exit(0)
-
     decision_scores = []
     for i in clf_svm.classes_:
         score = clf_svm.estimators_[i].decision_function([x_test])
@@ -424,41 +421,6 @@ def visualize2(img_test_path, layer_name, positive=True, title=True, show=True):
     return heatmaps, heatmap_filenames
 
 
-# def select_test_images_cub(data_path, images_file, parts_file, N=1):
-#     f = codecs.open(images_file, 'r')
-#     data = f.readlines()
-#     f.close()
-#     image_map = {}
-#     image_map_r = {}
-#     for r in data:
-#         rr = r.strip().split(' ')
-#         image_map[rr[1]] = rr[0]
-#         image_map_r[rr[0]] = rr[1]
-
-#     parts = {}
-#     f = codecs.open(parts_file, 'r')
-#     data = f.readlines()
-#     f.close()
-#     for r in data:
-#         rr = r.strip().split(' ')
-#         if rr[4] == '1':
-#             if parts.get(image_map_r[rr[0]], -1) == -1:
-#                 parts[image_map_r[rr[0]]] = [(rr[1], rr[2], rr[3])]
-#             else:
-#                 parts[image_map_r[rr[0]]].append((rr[1], rr[2], rr[3]))
-
-#     selected = []
-    
-#     for d in os.listdir(os.path.join(data_path, 'cub_200_full', 'test')):
-#         filenames = [f for f in os.listdir(os.path.join(data_path, 'cub_200_full', 'test', d))]
-#         r = np.random.randint(low=0, high=len(filenames), size=N)
-#         for rr in r:
-#             fname = os.path.join(d, filenames[rr])
-#             selected.append((fname, parts[fname]))
-
-#     dump_json(selected, os.path.join(DATA_FEATURES_PATH, 'cub_features.json'))
-
-
 def select_test_images_cub(data_path, N=1):
     selected = []
 
@@ -528,120 +490,33 @@ def calculate_diversity(images_file, parts_file, layer_name, threshold=0.8):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
+    parser.add_argument('--generate', required=False, action='store_true')
     parser.add_argument('--train', required=False, action='store_true')
     parser.add_argument('--test', required=False, action='store_true')
-    # parser.add_argument('--svm', required=False, action='store_true')
-    # parser.add_argument('--finetuned', required=False, action='store_true')
+    parser.add_argument('--build_nn', required=False, action='store_true')
+    parser.add_argument('--visualize', required=False)
+    parser.add_argument('--visualize_gradcam', required=False)
 
     args = parser.parse_args()
 
-    if args.train:
-        pass
+    print(args)
 
-    exit(0)
-
-    # MODEL_NAME = 'densenet121'
-    # generate_features('train')
-    # generate_features('test')
-
-    # train_svm(verbose=True, kernel='linear')
-    # # train_svm(verbose=True, kernel='poly', kernel_params={'degree': 4})
-
-    # test_svm()
-
-    # set_nn_weights()
-
-    # visualize('/home/miafranc/zzz/xsvm/data/stanford_dogs/test/n02085620-Chihuahua/n02085620_10074.jpg',
-    #           positive=True,
-    #           title=False)
-
-    # select_test_images_cub('/home/miafranc/zzz/xsvm/data/',
-    #                        1)
-    # exit(0)
-
-    # img_test_path = '/home/miafranc/zzz/xsvm/data/cub_200_full/test/001.Black_footed_Albatross/Black_Footed_Albatross_0046_18.jpg'
-    # img_test = Image.open(img_test_path)
-    # # plt.imshow(img_test)
-    # # plt.plot([312], [182], 'ro', markersize=12, linewidth=3)
-    # # plt.plot([183], [101], 'ro', markersize=2, linewidth=1)
-    # # plt.show()
-
-    # # a = np.array(img_test)[:, :, 0]
-    # a = np.array(img_test)
-    # # a[183, 101] = [255, 0, 0]
-    # a[101, 183] = [255, 0, 0]
-    # img_test = Image.fromarray(a)
-    # # print(a)
-    # # print(a[183, 101])
-
-    # plt.imshow(img_test)
-    # plt.show()
-
-    # exit(0)
-
-    # model = build_model('resnet50', NUM_CLASSES, BASE_MODEL_BIAS)
-    # model = build_model('densenet121', NUM_CLASSES, BASE_MODEL_BIAS)
-    # print(model)
-    # exit(0)
-
-    # generate_gradcams('/home/miafranc/zzz/xsvm/data/',
-    #                 #   'layer3.5.conv1')
-    #                 #   'layer4.0.conv1')
-    #                 #   'layer4.1.conv1')
-    #                 #   'features.denseblock4.denselayer16.conv1')
-    #                 #   'features.denseblock4.denselayer14.conv2')
-    #                   'features.denseblock4.denselayer15.conv1')
-    # exit(0)
-
-    # t = 0.85
-
-    # layers = ['layer3.5.conv1', 'layer4.0.conv1', 'layer4.1.conv1', 
-    #           'features.denseblock4.denselayer14.conv2', 'features.denseblock4.denselayer15.conv1', 'features.denseblock4.denselayer16.conv1']
-    # scores = {l:0 for l in layers}
-    # thresholds = []
-    # for t in [0.5 + 0.05*i for i in range(10)]:
-    #     print(t)
-    #     thresholds.append(t)
-    #     for l in layers:
-    #         scores[l] += calculate_diversity('/home/miafranc/zzz/xsvm/x3/cub/images.txt', 
-    #                         '/home/miafranc/zzz/xsvm/x3/cub/part_locs.txt', 
-    #                         l,
-    #                         t)
-
-    # for l in layers:
-    #     print(f'{l}: {scores[l] / len(thresholds)}')
-
-    # exit(0)
-
-    visualize('/home/miafranc/zzz/xsvm/data/cub_200_full/test/001.Black_footed_Albatross/Black_Footed_Albatross_0003_796136.jpg',
-              positive=False,
-              title=True)
-    exit(0)
-
-    # heatmaps = visualize2('/home/miafranc/zzz/xsvm/data/stanford_dogs/test/n02085620-Chihuahua/n02085620_10074.jpg',
-    # heatmaps = visualize2('/home/miafranc/zzz/xsvm/data/cub_200_full/test/001.Black_footed_Albatross/Black_Footed_Albatross_0046_18.jpg',
-    heatmaps = visualize2('/home/miafranc/zzz/xsvm/data/cub_200_full/test/001.Black_footed_Albatross/Black_Footed_Albatross_0003_796136.jpg',
-               layer_name='layer3.5.conv1', # resnet
-            #    layer_name='layer4.0.conv1', # resnet
-            #    layer_name='features.7.0.block.0', # convnext
-            #    layer_name='features.denseblock4.denselayer15.conv1', # densenet
-               positive=False,
-               title=False,
-               show=True)
-
-    # a1 = load('a_grad')
-    # a2 = load('a_grad2')
-    # print(len(a1))
-    # print(a1[0].shape)
-    # print(a1[1].shape)
-    # print(len(a2))
-    # print(a2[0].shape)
-    # print(a2[1].shape)
-    # for i in range(a1[0].shape[1]):
-    #     for j in range(a1[0].shape[2]):
-    #         for k in range(a1[0].shape[3]):
-    #             if a1[0][0,i,j,k] != a2[0][0,i,j,k]:
-    #                 print('jajj')
-
-    # gradcam('/home/miafranc/zzz/xsvm/data/stanford_dogs/test/n02085620-Chihuahua/n02085620_10074.jpg')
-    # gradcam2('/home/miafranc/zzz/xsvm/data/stanford_dogs/test/n02085620-Chihuahua/n02085620_10074.jpg')
+    if args.generate:
+        generate_features('train')
+        generate_features('test')
+    elif args.train:
+        train_svm(verbose=True, kernel='linear')
+    elif args.test:
+        test_svm()
+    elif args.build_nn:
+        set_nn_weights()  
+    elif args.visualize:
+        visualize(args.visualize, 
+                  positive=True, 
+                  title=True)
+    elif args.visualize_gradcam:
+        visualize2(args.visualize_gradcam,
+                   layer_name='layer3.5.conv1', # resnet
+                   positive=True,
+                   title=True,
+                   show=True)
