@@ -2,7 +2,7 @@ NUM_CLASSES = 120
 
 DATASET_NAME = 'stanford_dogs'
 
-DATA_PATH = '/home/miafranc/zzz/xsvm/data'
+DATA_PATH = '/home/user/data'
 DATA_FEATURES_PATH = 'data/'
 
 DATA_PERCENTAGE = 1.0

@@ -3,6 +3,8 @@
 
 Python code for the experiments described in the paper "Revisiting representer point selection for interpretable predictions".
 
+We also uploaded the trained ResNet-50(-based) models for the Stanford Dogs dataset, therefore all the tests and visualizations should work for this dataset and model.
+
 ### Convexity test
 
 The convexity tests can be run simply by
@@ -42,7 +44,7 @@ Only the above options are reachable through command-line arguments, but everyth
 
 ### Parameters
 
-The parameters are stored and thus can be set via `settings.py` and are the following (we are giving here a complete settings file explaining each parameter in the comments):
+The parameters are stored and thus can be set via `settings.py` and are the following (we are giving here a complete settings file explaining each parameter in the comments, except where the name makes it clear, what the respective parameter is for):
 
 ```
 NUM_CLASSES = 120 # number of classes
