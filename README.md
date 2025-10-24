@@ -16,6 +16,8 @@ The json files in the above-mentioned directory are copies of the datasets in JS
 
 ### Training and testing vanilla CNNs
 
+CNNs can be trained, tested, and SVM-based CNNs can be fine-tuned via `baseline.py`.
+
 For training and testing CNNs; currently implemented: ResNet-34, ResNet-50, DenseNet-121, DenseNet-161, ConvNeXt-T.
 Every parameter (e.g. model used, learning rate, training and test image folders, etc.) is controlled via `settings.py`. 
 The description of the available parameters will be given below.
