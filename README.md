@@ -1,7 +1,11 @@
 # rrepps
-## Revisiting representer point selection for interpretable predictions
+# Revisiting representer point selection for interpretable predictions
 
 Python code for the experiments described in the paper "Revisiting representer point selection for interpretable predictions".
+
+<p align="center">
+  <img src="img/black_footed_albatross.png" width="450"/>
+</p>
 
 We also uploaded the trained ResNet-50(-based) models for the Stanford Dogs dataset, therefore all the tests and visualizations should work for this dataset and model.
 
