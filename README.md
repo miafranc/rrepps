@@ -1,4 +1,3 @@
-# rrepps
 # Revisiting representer point selection for interpretable predictions
 
 Python code for the experiments described in the paper "Revisiting representer point selection for interpretable predictions".
@@ -9,7 +8,7 @@ Python code for the experiments described in the paper "Revisiting representer p
 
 We also uploaded the trained ResNet-50(-based) models for the Stanford Dogs dataset, therefore all the tests and visualizations should work for this dataset and model.
 
-### Convexity test
+## Convexity test
 
 The convexity tests can be run simply by
 ```
@@ -18,7 +17,7 @@ python cvx.py
 The code uses the datasets in the `data/gaussian` folder, specifically `gaussian_train_100_10` and `gaussian_val_100_10` (currently, only the training set is used).
 The json files in the above-mentioned directory are copies of the datasets in JSON format.
 
-### Training and testing vanilla CNNs
+## Training and testing vanilla CNNs
 
 CNNs can be trained, tested, and SVM-based CNNs can be fine-tuned via `baseline.py`.
 
@@ -34,7 +33,7 @@ Command-line arguments:
 
 Corruptions can also be applied to the test images via `settings.py`.
 
-### The XSVM model
+## The XSVM model
 
 The XSVM can be trained and tested using the `xsvm.py` script. 
 
@@ -48,7 +47,7 @@ Command-line arguments:
 
 Only the above options are reachable through command-line arguments, but everything described in the paper can be performed (e.g. calculating layer divesity) from code.
 
-### Parameters
+## Parameters
 
 The parameters are stored and thus can be set via `settings.py` and are the following (we are giving here a complete settings file explaining each parameter in the comments, except where the name makes it clear, what the respective parameter is for):
 
@@ -102,7 +101,7 @@ CORRUPTION_BRIGHTNESS = 1.2
 CORRUPTION_PIXELATE_LEVEL = 2
 ```
 
-### Datasets used in the experiments
+## Datasets used in the experiments
 
 * CUB-200-2011: [https://www.vision.caltech.edu/datasets/cub_200_2011/](https://www.vision.caltech.edu/datasets/cub_200_2011/)
 * Stanford Dogs: [http://vision.stanford.edu/aditya86/ImageNetDogs/](http://vision.stanford.edu/aditya86/ImageNetDogs/)
