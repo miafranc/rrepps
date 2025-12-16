@@ -1,2 +1,5 @@
 __pycache__
 runs
+out.png
+models/cub_200_full
+data/cub*

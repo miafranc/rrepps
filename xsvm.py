@@ -13,6 +13,9 @@ from pprint import pprint
 from PIL import Image
 import matplotlib
 import matplotlib.pyplot as plt
+
+# matplotlib.use('Agg')
+
 import argparse
 import codecs
 import pickle
@@ -26,7 +29,7 @@ from scipy.sparse import csr_matrix
 from scipy.linalg import norm
 
 from settings import *
-from utils import load, dump, dump_json, load_json, get_train_validation, one_hot_np, one_hot_torch
+from utils import load, dump, dump_json, load_json, get_train_validation, one_hot_np, one_hot_torch, set_seed
 from baseline import build_model, name2model
 from image_dataset import ImageDatasetWithFilenames
 
@@ -89,7 +92,7 @@ def generate_features(dataset_type='train'):
     filenames = [] # [subfolder, filename]
     imap = dataset.imap
 
-    for i, data in enumerate(tqdm(dataloader, unit='batch')):
+    for i, data in enumerate(tqdm(dataloader, unit='batch', desc=dataset_type)):
         (image, label, filename) = data
         features = extract_features(image.to(DEVICE), feature_extractor, BATCH_SIZE)
         # features = feature_extractor(image.to(DEVICE))[name2model[MODEL_NAME][2]].detach()
@@ -249,6 +252,9 @@ def visualize(img_test_path, positive=True, title=True):
     plt.subplots_adjust(wspace=0.1, hspace=0.1)
     plt.axis('off')
     plt.show()
+    
+    plt.savefig('out.png')
+    plt.close(figure)
 
 
 def visualize2(img_test_path, layer_name, positive=True, title=True, show=True):
@@ -418,14 +424,17 @@ def visualize2(img_test_path, layer_name, positive=True, title=True, show=True):
         plt.axis('off')
         plt.show()
 
+        plt.savefig('out.png')
+        plt.close(figure)
+
     return heatmaps, heatmap_filenames
 
 
 def select_test_images_cub(data_path, N=1):
     selected = []
 
-    for d in os.listdir(os.path.join(data_path, 'cub_200_full', 'test')):
-        filenames = [f for f in os.listdir(os.path.join(data_path, 'cub_200_full', 'test', d))]
+    for d in os.listdir(os.path.join(data_path, 'cub_200_full', 'test')): # Hardcoded dataset names/paths!
+        filenames = [f for f in os.listdir(os.path.join(data_path, 'cub_200_full', 'test', d))] # Hardcoded dataset names/paths!
         r = np.random.randint(low=0, high=len(filenames), size=N)
         for rr in r:
             fname = os.path.join(d, filenames[rr])
@@ -434,17 +443,18 @@ def select_test_images_cub(data_path, N=1):
     dump_json(selected, os.path.join(DATA_FEATURES_PATH, 'cub_features.json'))
 
 
-def generate_gradcams(data_path, layer_name):
+def generate_gradcams_cub(data_path, layer_name):
+    # Hardcoded dataset names/paths!
     files = load_json(os.path.join(DATA_FEATURES_PATH, 'cub_features.json'))
     heatmaps = []
     for f in files:
-        img_path = os.path.join(data_path, 'cub_200_full', 'test', f)
+        img_path = os.path.join(data_path, 'cub_200_full', 'test', f) # Hardcoded dataset names/paths!
         h, fnames = visualize2(img_path, layer_name, positive=True, title=False, show=False)
         heatmaps.append((fnames, h))
     dump(heatmaps, os.path.join(DATA_FEATURES_PATH, f'cub_{layer_name}.pickle'))
 
 
-def calculate_diversity(images_file, parts_file, layer_name, threshold=0.8):
+def calculate_diversity_cub(images_file, parts_file, layer_name, threshold=0.8):
     f = codecs.open(images_file, 'r')
     data = f.readlines()
     f.close()
@@ -467,6 +477,7 @@ def calculate_diversity(images_file, parts_file, layer_name, threshold=0.8):
             else:
                 parts[image_map_r[rr[0]]].append((rr[1], rr[2], rr[3]))
 
+    # Hardcoded dataset names/paths!
     heatmaps = load(os.path.join(DATA_FEATURES_PATH, f'cub_{layer_name}.pickle'))
     score = []
     for img in heatmaps:
@@ -476,19 +487,23 @@ def calculate_diversity(images_file, parts_file, layer_name, threshold=0.8):
             hmap = img[1][i]
             hmap_bin = hmap > threshold
             for part in parts[fname]:
-                if hmap_bin[int(float(part[2])), int(float(part[1]))]:
-                    p[part[0]] = p.get(part[0], 0) + 1
+                try:
+                    if hmap_bin[int(float(part[2])), int(float(part[1]))]:
+                        p[part[0]] = p.get(part[0], 0) + 1
+                except:
+                    print(f'PART LOCATION ERROR: {fname} / part: {part[0]}')
         # print(p)
         if len(p) > 0:
             score.append(float(len(p)) / np.mean(list(p.values())))
         else:
             score.append(0.)
 
-    # print(f'Diversity: {np.mean(score)} (+/- {np.std(score)})')
-    return np.mean(score)
+    return score
 
 
 if __name__ == '__main__':
+    set_seed(42)
+
     parser = argparse.ArgumentParser()
     parser.add_argument('--generate', required=False, action='store_true')
     parser.add_argument('--train', required=False, action='store_true')
@@ -496,10 +511,9 @@ if __name__ == '__main__':
     parser.add_argument('--build_nn', required=False, action='store_true')
     parser.add_argument('--visualize', required=False)
     parser.add_argument('--visualize_gradcam', required=False)
+    parser.add_argument('--diversity', required=False)
 
     args = parser.parse_args()
-
-    print(args)
 
     if args.generate:
         generate_features('train')
@@ -520,3 +534,11 @@ if __name__ == '__main__':
                    positive=True,
                    title=True,
                    show=True)
+    elif args.diversity:
+        # Mind the hardcoded dataset folder names/paths for the CUB dataset!
+        select_test_images_cub(DATA_PATH)
+        generate_gradcams_cub(DATA_PATH, args.diversity) # e.g. layer4.1.conv1
+        score = calculate_diversity_cub(CUB_IMAGES,
+                                        CUB_PART_LOCS,
+                                        args.diversity)
+        print(f'Layer diversity score = {np.mean(score)} +/- {np.std(score)}')

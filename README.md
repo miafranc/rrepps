@@ -38,11 +38,13 @@ Command-line arguments:
 * `--generate` - generates the features for training;
 * `--train` - trains the SVM;
 * `--test` - tests the SVM;
-* `--build_nn` - builds the neural network using the SVM's classifier weights; it is needed for performing the decomposed Grad-CAM, and to perform fine-tuning.
+* `--build_nn` - builds the neural network using the SVM's classifier weights; it is needed for performing the decomposed Grad-CAM, and to perform fine-tuning;
 * `--visualize FILENAME` -- visualizes the 9 most important positive examples (if negative are needed, it has to be changed in the code);
-* `--visualize_gradcam FILENAME` -- visualizes the 9 most important positive training examples showing the Grad-CAM saliency.
+* `--visualize_gradcam FILENAME` -- visualizes the 9 most important positive training examples showing the Grad-CAM saliency;
+* `--diversity LAYER_NAME` -- calculate the diversity score for the given layer (for example `layer4.1.conv1` for ResNet-50); mind the hardcoded CUB-related paths in the methods.
 
-Only the above options are reachable through command-line arguments, but everything described in the paper can be performed (e.g. calculating layer divesity) from code.
+In order to work, first the features have to be generated, then the SVM has to be trained. Then, depending on the task, one can either test the SVM, or build the neural network
+using the weights of the SVM. If the NN is built, simple visualization or visualization using decomposed Grad-CAM can be performed. The generated figure is also saved to `out.png`.
 
 ### Parameters
 
@@ -96,6 +98,9 @@ CORRUPTION_NOISE_BLEND = 30
 CORRUPTION_CONTRAST = 1.5
 CORRUPTION_BRIGHTNESS = 1.2
 CORRUPTION_PIXELATE_LEVEL = 2
+
+CUB_IMAGES = '/home/user/data/cub_200_full/images.txt' # location of CUB's images.txt needed for div. score
+CUB_PART_LOCS = '/home/user/data/cub_200_full/part_locs.txt' # location of CUB's parts_locs.txt needed for div. score
 ```
 
 ### Datasets used in the experiments
