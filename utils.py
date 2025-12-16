@@ -130,4 +130,4 @@ def dump_parameters(logdir, filename):
 
 
 if __name__ == '__main__':
-    calculate_mean_and_std('/home/miafranc/zzz/xsvm/data/!', (224, 224))
+    calculate_mean_and_std('/data', (224, 224))
