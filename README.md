@@ -36,7 +36,7 @@ Corruptions can also be applied to the test images via `settings.py`.
 
 ## The DxSVM model
 
-The DxSVM (Deep Explainable SVM, i.e. CNN with SVM head trained separately) can be trained and tested using the `xsvm.py` script. 
+The DxSVM (Deep Explainable SVM, i.e. CNN with SVM head trained separately) can be trained and tested using the `dxsvm.py` script. 
 
 Command-line arguments:
 * `--generate` - generates the features for training;
