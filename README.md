@@ -29,13 +29,14 @@ Command-line arguments:
 * `--train` - trains the CNN;
 * `--test` - tests the model;
 * `--svm` - if used with `--test`, tests the SVM;
-* `--finetuned` - if used with `--train`, fine-tunes the model; if used with `--test`, uses the fine-tuned SVM.
+* [`--finetuned` - if used with `--train`, fine-tunes the model; if used with `--test`, uses the fine-tuned SVM. 
+Here, fine-tuning means freezing the classifier and training the parameters of the backbone. Not used in the experiments described in the paper.]
 
 Corruptions can also be applied to the test images via `settings.py`.
 
-## The XSVM model
+## The DxSVM model
 
-The XSVM can be trained and tested using the `xsvm.py` script. 
+The DxSVM (Deep Explainable SVM, i.e. CNN with SVM head trained separately) can be trained and tested using the `xsvm.py` script. 
 
 Command-line arguments:
 * `--generate` - generates the features for training;
@@ -44,7 +45,7 @@ Command-line arguments:
 * `--build_nn` - builds the neural network using the SVM's classifier weights; it is needed for performing the decomposed Grad-CAM, and to perform fine-tuning;
 * `--visualize FILENAME` -- visualizes the 9 most important positive examples (if negative are needed, it has to be changed in the code);
 * `--visualize_gradcam FILENAME` -- visualizes the 9 most important positive training examples showing the Grad-CAM saliency;
-* `--diversity LAYER_NAME` -- calculate the diversity score for the given layer (for example `layer4.1.conv1` for ResNet-50); mind the hardcoded CUB-related paths in the methods.
+* `--diversity` -- calculate the diversity score for a given layer (for example `layer4.1.conv1` for ResNet-50); mind the hardcoded CUB-related paths in the methods.
 
 In order to work, first the features have to be generated, then the SVM has to be trained. Then, depending on the task, one can either test the SVM, or build the neural network
 using the weights of the SVM. If the NN is built, simple visualization or visualization using decomposed Grad-CAM can be performed. The generated figure is also saved to `out.png`.
@@ -104,6 +105,8 @@ CORRUPTION_PIXELATE_LEVEL = 2
 
 CUB_IMAGES = '/home/user/data/cub_200_full/images.txt' # location of CUB's images.txt needed for div. score
 CUB_PART_LOCS = '/home/user/data/cub_200_full/part_locs.txt' # location of CUB's parts_locs.txt needed for div. score
+DIV_LAYER = 'layer4.1.conv1' # layer for which diversity is to be computed
+DIV_THRESHOLD = 0.85 # activation threshold used in layer diversity score
 ```
 
 ## Datasets used in the experiments

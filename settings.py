@@ -53,3 +53,5 @@ CORRUPTION_PIXELATE_LEVEL = 2
 
 CUB_IMAGES = '/home/user/data/cub_200_full/images.txt'
 CUB_PART_LOCS = '/home/user/data/cub_200_full/part_locs.txt'
+DIV_LAYER = 'layer4.1.conv1'
+DIV_THRESHOLD = 0.85

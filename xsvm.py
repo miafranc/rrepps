@@ -511,7 +511,7 @@ if __name__ == '__main__':
     parser.add_argument('--build_nn', required=False, action='store_true')
     parser.add_argument('--visualize', required=False)
     parser.add_argument('--visualize_gradcam', required=False)
-    parser.add_argument('--diversity', required=False)
+    parser.add_argument('--diversity', required=False, action='store_true')
 
     args = parser.parse_args()
 
@@ -537,8 +537,9 @@ if __name__ == '__main__':
     elif args.diversity:
         # Mind the hardcoded dataset folder names/paths for the CUB dataset!
         select_test_images_cub(DATA_PATH)
-        generate_gradcams_cub(DATA_PATH, args.diversity) # e.g. layer4.1.conv1
+        generate_gradcams_cub(DATA_PATH, DIV_LAYER) # e.g. layer4.1.conv1
         score = calculate_diversity_cub(CUB_IMAGES,
                                         CUB_PART_LOCS,
-                                        args.diversity)
+                                        DIV_LAYER,
+                                        DIV_THRESHOLD)
         print(f'Layer diversity score = {np.mean(score)} +/- {np.std(score)}')
